@@ -2,7 +2,7 @@ export { isValidReading, kataToHira, normalizeReading, readingCompatible, segmen
 export type { Segment, SegmentKind } from "./kana.js";
 export { JevError, TypeSafeJev, noulOf } from "./jev.js";
 export type { Answer, ChoiceAnswer, ChoiceQuestion, JevClient, JsonValue, NoulAnswer, NoulQuestion, Question, SystemOneResponse } from "./jev.js";
-export { Brave, GoogleCse, MONID_DEFAULTS, Monid, SearchChain, SearchExhausted, SearchUnavailable, Wikipedia, extractHits, providersFromEnv } from "./search.js";
+export { Brave, DEFAULT_SEARCH_ORDER, GoogleCse, MONID_DEFAULTS, Monid, SearchChain, SearchExhausted, SearchUnavailable, Wikipedia, extractHits, providersFromEnv } from "./search.js";
 export type { MonidOptions, SearchEnv, SearchHit, SearchProvider } from "./search.js";
 export { CHECK_TOP, MAX_CANDIDATES, MIN_SCORE, NONE, Resolver, extractCandidates } from "./resolve.js";
 export type { ResolveCandidate, ResolveResult, ResolverOptions } from "./resolve.js";

@@ -14,6 +14,9 @@ describe("kana", () => {
     expect(isValidReading("ほしまちすいせい")).toBe(true);
     expect(isValidReading("星街")).toBe(false);
     expect(isValidReading("")).toBe(false);
+    expect(isValidReading("あ".repeat(20))).toBe(true);
+    expect(isValidReading("あ".repeat(21))).toBe(false);
+    expect(isValidReading(normalizeReading("ウサダペコラ"))).toBe(true);
   });
 
   it("segments names", () => {

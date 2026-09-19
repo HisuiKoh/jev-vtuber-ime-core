@@ -236,11 +236,14 @@ export interface SearchEnv {
   MONID_SEARCH_INPUT?: string | undefined;
   /** "body" | "queryParams"。既定 queryParams */
   MONID_SEARCH_INPUT_KIND?: string | undefined;
-  /** カンマ区切りで順序を指定。既定: google,brave,monid */
+  /** カンマ区切りで順序を指定。未設定時は DEFAULT_SEARCH_ORDER */
   SEARCH_ORDER?: string | undefined;
 }
 
-/** 環境変数にある鍵からチェーンを組む。既定の優先: Google → Brave → Monid → (何も無ければ Wikipedia)。 */
+/** 鍵があるプロバイダだけが使われる。Google の鍵はこのデモでは入れない。 */
+export const DEFAULT_SEARCH_ORDER = ["monid", "brave", "google"] as const;
+
+/** 環境変数にある鍵からチェーンを組む。既定の優先: Monid → Brave → Google → (何も無ければ Wikipedia)。 */
 export function providersFromEnv(env: SearchEnv, fetchImpl: typeof fetch = fetch): SearchProvider[] {
   const available = new Map<string, SearchProvider>();
   if (env.GOOGLE_CSE_KEY && env.GOOGLE_CSE_CX) available.set("google", new GoogleCse(env.GOOGLE_CSE_KEY, env.GOOGLE_CSE_CX, fetchImpl));
@@ -258,7 +261,7 @@ export function providersFromEnv(env: SearchEnv, fetchImpl: typeof fetch = fetch
       }),
     );
   }
-  const order = (env.SEARCH_ORDER ?? "google,brave,monid").split(",").map((s) => s.trim()).filter(Boolean);
+  const order = (env.SEARCH_ORDER ?? DEFAULT_SEARCH_ORDER.join(",")).split(",").map((s) => s.trim()).filter(Boolean);
   const out = order.map((k) => available.get(k)).filter((p): p is SearchProvider => p !== undefined);
   if (out.length === 0) out.push(new Wikipedia(fetchImpl));
   return out;
