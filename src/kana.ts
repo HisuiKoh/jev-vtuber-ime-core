@@ -7,8 +7,10 @@ export interface Segment {
   text: string;
 }
 
-const KANA_RE = /[\u3041-\u309f\u30a1-\u30ff]/u;
+const KANA_RE = /[\u3041-\u309f\u30a1-\u30fa\u30fc-\u30ff]/u; // 中黒 (U+30FB) は除く
 const KANJI_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3005]/u; // 々 含む
+/** 名前の区切りとして読みに現れない文字: 空白・中黒。「グウェル・オス・ガール」の読みは「ぐうぇるおすがーる」。 */
+const SEPARATOR_RE = /[\s\u3000\u30fb]/u;
 
 /** カタカナ → ひらがな (ァ..ヶ)。長音「ー」はそのまま。 */
 export function kataToHira(text: string): string {
@@ -20,9 +22,9 @@ export function kataToHira(text: string): string {
   return out;
 }
 
-/** 入力の読みを正規化する: NFKC、カナ→かな、空白除去。キャッシュのキーにも使う。 */
+/** 入力の読みを正規化する: NFKC、カナ→かな、空白・中黒除去。キャッシュのキーにも使う。 */
 export function normalizeReading(input: string): string {
-  return kataToHira(input.normalize("NFKC")).replace(/[\s\u3000]+/gu, "");
+  return kataToHira(input.normalize("NFKC")).replace(/[\s\u3000\u30fb]+/gu, "");
 }
 
 /** 読みとして受け付けるか (ひらがな・カタカナ・長音のみ、1〜20 文字)。公開時の入力制限。 */
@@ -33,7 +35,7 @@ export function isValidReading(reading: string): boolean {
 export function segment(name: string): Segment[] {
   const out: Segment[] = [];
   for (const ch of name) {
-    if (/\s/u.test(ch)) continue;
+    if (SEPARATOR_RE.test(ch)) continue;
     const kind: SegmentKind = KANA_RE.test(ch) ? "kana" : KANJI_RE.test(ch) ? "kanji" : "other";
     const last = out[out.length - 1];
     if (last && last.kind === kind) last.text += ch;
