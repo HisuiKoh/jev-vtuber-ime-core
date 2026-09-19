@@ -3,6 +3,8 @@
  * Cloudflare Workers AI の `typesafe/jev` バインディングを使う場合は JevClient を別実装して渡す。
  */
 
+import { defaultFetch } from "./http.js";
+
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [k: string]: JsonValue };
 
 export interface ChoiceQuestion {
@@ -69,7 +71,7 @@ export class TypeSafeJev implements JevClient {
     this.apiKey = opts.apiKey;
     this.model = opts.model ?? "jev-latest";
     this.baseUrl = opts.baseUrl ?? "https://api.typesafe.ai";
-    this.fetchImpl = opts.fetch ?? fetch;
+    this.fetchImpl = opts.fetch ?? defaultFetch;
   }
 
   async systemOne(state: JsonValue, questions: Record<string, Question>): Promise<SystemOneResponse> {

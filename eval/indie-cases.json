@@ -1,0 +1,10 @@
+{
+  "description": "個人勢の読み。辞書ではなく評価用オラクル。npm test では呼ばない（検索・Jev を消費する）。",
+  "query": "<reading> VTuber",
+  "cases": [
+    { "reading": "しぐれうい", "expect": ["しぐれうい"] },
+    { "reading": "ばあちゃる", "expect": ["ばあちゃる"] },
+    { "reading": "ふじあおい", "expect": ["富士葵"] },
+    { "reading": "きねつきのあ", "expect": ["杵月のあ"] }
+  ]
+}

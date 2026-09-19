@@ -18,6 +18,9 @@ describe("kana", () => {
     expect(isValidReading("ほしまちすいせい")).toBe(true);
     expect(isValidReading("星街")).toBe(false);
     expect(isValidReading("")).toBe(false);
+    expect(isValidReading("あ".repeat(20))).toBe(true);
+    expect(isValidReading("あ".repeat(21))).toBe(false);
+    expect(isValidReading(normalizeReading("ウサダペコラ"))).toBe(true);
   });
 
   it("segments names", () => {
@@ -35,6 +38,7 @@ describe("kana", () => {
     expect(readingCompatible("碧依さくらさん", "さくら")).toBe(false);
     expect(readingCompatible("碧依", "さくら")).toBe(true); // 漢字のみは通す (Jev の reading_match が弾く)
     expect(readingCompatible("Mori Calliope", "もりかりおぺ")).toBe(true);
+    expect(readingCompatible("杵月のあ", "きねつきのあ")).toBe(true);
     // 中黒・ローマ数字は読みに現れないので無視して比較する
     expect(readingCompatible("グウェル・オス・ガール", "ぐうぇるおすがーる")).toBe(true);
     expect(readingCompatible("ギルザレンⅢ世", "ぎるざれんさんせい")).toBe(true);
@@ -98,5 +102,12 @@ describe("extractCandidates", () => {
     expect(ranked[0]).toBe("Gawr Gura");
     expect(ranked).not.toContain("YouTube Gawr Gura");
     expect(names("あいりす", "hololive-EN IRyS（アイリス）")[0]).toBe("IRyS");
+  });
+
+  it("keeps 杵月のあ when the parenthesised reading matches きねつきのあ", () => {
+    const hits = [
+      { title: "杵月のあ（きねつきのあ）", url: "https://example.test/kine", snippet: "個人勢のVTuber。" },
+    ];
+    expect([...extractCandidates("きねつきのあ", hits).keys()]).toContain("杵月のあ");
   });
 });
