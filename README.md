@@ -17,7 +17,7 @@ $ jev-vtuber-ime はしもとかんな
 
 ## 仕組み
 
-1. 読みで Web 検索（Google Programmable Search → Brave の順に試し、枯れたら次へ）
+1. 読みで Web 検索（`SEARCH_ORDER` の順に試し、枯れたら次へ。対応: Monid/TinyFish ($0)、Brave、Google Programmable Search）
 2. 検索結果のタイトル・スニペットから名前らしい文字列を候補にする。名前の「かな部分」が読みに含まれない候補は機械的に落とす
 3. 検索結果を根拠 (`state`) として Jev に 1 回だけ問い合わせる。同じ呼び出しに次を並べる
    - `who` (Choice): どの候補がその読みの VTuber か

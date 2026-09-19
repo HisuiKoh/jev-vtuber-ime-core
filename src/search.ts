@@ -105,19 +105,28 @@ export interface MonidOptions {
   provider: string;
   /** そのツールの endpoint (例: "/search") */
   endpoint: string;
-  /** endpoint が受け取る body。`{query}` と `{n}` を置換する。既定: {"query": "{query}"} */
-  bodyTemplate?: Record<string, unknown> | undefined;
+  /** endpoint に渡す入力。`{query}` と `{n}` を置換する。既定: TinyFish 用 {"query":"{query}","location":"JP","language":"ja"} */
+  inputTemplate?: Record<string, unknown> | undefined;
+  /** 入力を body で渡すか queryParams で渡すか (`monid inspect` の Input 欄に従う)。既定: queryParams */
+  inputKind?: "body" | "queryParams" | undefined;
   baseUrl?: string | undefined;
   /** ポーリング上限 (ms)。Monid の run は非同期で 1〜120 秒かかる */
   timeoutMs?: number | undefined;
   fetchImpl?: typeof fetch | undefined;
 }
 
+export const MONID_DEFAULTS = {
+  provider: "tinyfish",
+  endpoint: "/search",
+  inputKind: "queryParams" as const,
+  inputTemplate: { query: "{query}", location: "JP", language: "ja" },
+};
+
 /**
  * Monid (https://monid.ai) 経由の検索。Monid は多数のツールを 1 つの残高で呼ぶ仲介で、
- * TinyFish 検索など無料のものがある。run を投げて runId をポーリングする非同期 API。
- * ツールごとに入出力が違うので、provider / endpoint / body は設定で与え、出力は
- * 「title と url を持つオブジェクトの配列」を探して SearchHit に寄せる。
+ * 既定の TinyFish /search は $0/call。run を投げて runId をポーリングする非同期 API (typ. 3 秒)。
+ * ツールごとに入出力が違うので provider / endpoint / 入力は設定で与え、出力は
+ * 「url を持つオブジェクトの配列」を探して SearchHit に寄せる。
  */
 export class Monid implements SearchProvider {
   readonly name = "monid";
@@ -142,9 +151,10 @@ export class Monid implements SearchProvider {
   }
 
   async search(query: string, n = 10): Promise<SearchHit[]> {
-    const template = this.opts.bodyTemplate ?? { query: "{query}" };
-    const body = JSON.parse(JSON.stringify(template).replace(/"\{n\}"/g, String(n)).replace(/\{query\}/g, query.replace(/"/g, '\\"')));
-    const started = (await this.request("POST", "/v1/run", { provider: this.opts.provider, endpoint: this.opts.endpoint, input: { body } })) as {
+    const template = this.opts.inputTemplate ?? MONID_DEFAULTS.inputTemplate;
+    const filled = JSON.parse(JSON.stringify(template).replace(/"\{n\}"/g, String(n)).replace(/\{query\}/g, query.replace(/"/g, '\\"')));
+    const input = (this.opts.inputKind ?? MONID_DEFAULTS.inputKind) === "body" ? { body: filled } : { queryParams: filled };
+    const started = (await this.request("POST", "/v1/run", { provider: this.opts.provider, endpoint: this.opts.endpoint, input })) as {
       runId?: string;
       status?: string;
     };
@@ -218,12 +228,14 @@ export interface SearchEnv {
   GOOGLE_CSE_CX?: string | undefined;
   BRAVE_API_KEY?: string | undefined;
   MONID_API_KEY?: string | undefined;
-  /** 例: "tinyfish" */
+  /** 既定 "tinyfish" */
   MONID_SEARCH_PROVIDER?: string | undefined;
-  /** 例: "/search" */
+  /** 既定 "/search" */
   MONID_SEARCH_ENDPOINT?: string | undefined;
-  /** JSON。例: {"query":"{query}","maxResults":"{n}"} */
-  MONID_SEARCH_BODY?: string | undefined;
+  /** JSON。既定 {"query":"{query}","location":"JP","language":"ja"} */
+  MONID_SEARCH_INPUT?: string | undefined;
+  /** "body" | "queryParams"。既定 queryParams */
+  MONID_SEARCH_INPUT_KIND?: string | undefined;
   /** カンマ区切りで順序を指定。既定: google,brave,monid */
   SEARCH_ORDER?: string | undefined;
 }
@@ -233,14 +245,15 @@ export function providersFromEnv(env: SearchEnv, fetchImpl: typeof fetch = fetch
   const available = new Map<string, SearchProvider>();
   if (env.GOOGLE_CSE_KEY && env.GOOGLE_CSE_CX) available.set("google", new GoogleCse(env.GOOGLE_CSE_KEY, env.GOOGLE_CSE_CX, fetchImpl));
   if (env.BRAVE_API_KEY) available.set("brave", new Brave(env.BRAVE_API_KEY, fetchImpl));
-  if (env.MONID_API_KEY && env.MONID_SEARCH_PROVIDER && env.MONID_SEARCH_ENDPOINT) {
+  if (env.MONID_API_KEY) {
     available.set(
       "monid",
       new Monid({
         apiKey: env.MONID_API_KEY,
-        provider: env.MONID_SEARCH_PROVIDER,
-        endpoint: env.MONID_SEARCH_ENDPOINT,
-        bodyTemplate: env.MONID_SEARCH_BODY ? (JSON.parse(env.MONID_SEARCH_BODY) as Record<string, unknown>) : undefined,
+        provider: env.MONID_SEARCH_PROVIDER || MONID_DEFAULTS.provider,
+        endpoint: env.MONID_SEARCH_ENDPOINT || MONID_DEFAULTS.endpoint,
+        inputTemplate: env.MONID_SEARCH_INPUT ? (JSON.parse(env.MONID_SEARCH_INPUT) as Record<string, unknown>) : undefined,
+        inputKind: env.MONID_SEARCH_INPUT_KIND === "body" ? "body" : env.MONID_SEARCH_INPUT_KIND === "queryParams" ? "queryParams" : undefined,
         fetchImpl,
       }),
     );
