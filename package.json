@@ -20,6 +20,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
+    "eval:indie": "tsx scripts/eval-indie.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": { "node": ">=20" },
