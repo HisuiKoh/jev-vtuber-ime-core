@@ -99,6 +99,100 @@ export class Wikipedia implements SearchProvider {
   }
 }
 
+export interface MonidOptions {
+  apiKey: string;
+  /** Monid 上の検索ツールの provider 名 (例: "tinyfish") */
+  provider: string;
+  /** そのツールの endpoint (例: "/search") */
+  endpoint: string;
+  /** endpoint が受け取る body。`{query}` と `{n}` を置換する。既定: {"query": "{query}"} */
+  bodyTemplate?: Record<string, unknown> | undefined;
+  baseUrl?: string | undefined;
+  /** ポーリング上限 (ms)。Monid の run は非同期で 1〜120 秒かかる */
+  timeoutMs?: number | undefined;
+  fetchImpl?: typeof fetch | undefined;
+}
+
+/**
+ * Monid (https://monid.ai) 経由の検索。Monid は多数のツールを 1 つの残高で呼ぶ仲介で、
+ * TinyFish 検索など無料のものがある。run を投げて runId をポーリングする非同期 API。
+ * ツールごとに入出力が違うので、provider / endpoint / body は設定で与え、出力は
+ * 「title と url を持つオブジェクトの配列」を探して SearchHit に寄せる。
+ */
+export class Monid implements SearchProvider {
+  readonly name = "monid";
+  private readonly baseUrl: string;
+  private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
+
+  constructor(private readonly opts: MonidOptions) {
+    this.baseUrl = opts.baseUrl ?? "https://api.monid.ai";
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.timeoutMs = opts.timeoutMs ?? 30_000;
+  }
+
+  private async request(method: string, path: string, body?: unknown): Promise<unknown> {
+    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${this.opts.apiKey}`, "content-type": "application/json", "x-monid-client": "jev-vtuber-ime" },
+      body: body === undefined ? null : JSON.stringify(body),
+    });
+    if (!res.ok) throw new SearchUnavailable(this.name, `HTTP ${res.status}`, res.status);
+    return res.status === 204 ? null : res.json();
+  }
+
+  async search(query: string, n = 10): Promise<SearchHit[]> {
+    const template = this.opts.bodyTemplate ?? { query: "{query}" };
+    const body = JSON.parse(JSON.stringify(template).replace(/"\{n\}"/g, String(n)).replace(/\{query\}/g, query.replace(/"/g, '\\"')));
+    const started = (await this.request("POST", "/v1/run", { provider: this.opts.provider, endpoint: this.opts.endpoint, input: { body } })) as {
+      runId?: string;
+      status?: string;
+    };
+    if (!started.runId) throw new SearchUnavailable(this.name, "no runId in response");
+
+    const deadline = Date.now() + this.timeoutMs;
+    let run: Record<string, unknown> = started;
+    while (!isTerminal(run["status"])) {
+      if (Date.now() > deadline) throw new SearchUnavailable(this.name, "run timed out");
+      await new Promise((r) => setTimeout(r, 1500));
+      run = (await this.request("GET", `/v1/runs/${encodeURIComponent(started.runId)}`)) as Record<string, unknown>;
+    }
+    if (run["status"] !== "COMPLETED") {
+      // BLOCKED = ワークスペースの予算/回数上限。FAILED も含めて「このプロバイダは今使えない」
+      throw new SearchUnavailable(this.name, `run ${String(run["status"])}`);
+    }
+    return extractHits(run).slice(0, n);
+  }
+}
+
+const isTerminal = (s: unknown): boolean => s === "COMPLETED" || s === "FAILED" || s === "BLOCKED" || s === "STOPPED" || s === "TIMED_OUT";
+
+/** 任意の JSON から「url を持つオブジェクトの配列」を最初に見つけて SearchHit に寄せる。 */
+export function extractHits(data: unknown, depth = 0): SearchHit[] {
+  if (depth > 6 || data === null || typeof data !== "object") return [];
+  if (Array.isArray(data)) {
+    const objs = data.filter((x): x is Record<string, unknown> => x !== null && typeof x === "object" && !Array.isArray(x));
+    const withUrl = objs.filter((o) => typeof (o["url"] ?? o["link"]) === "string");
+    if (withUrl.length > 0 && withUrl.length >= objs.length / 2) {
+      return withUrl.map((o) => ({
+        title: String(o["title"] ?? o["name"] ?? ""),
+        url: String(o["url"] ?? o["link"]),
+        snippet: stripTags(String(o["snippet"] ?? o["description"] ?? o["content"] ?? o["text"] ?? "")).slice(0, 500),
+      }));
+    }
+    for (const item of data) {
+      const hits = extractHits(item, depth + 1);
+      if (hits.length) return hits;
+    }
+    return [];
+  }
+  for (const v of Object.values(data as Record<string, unknown>)) {
+    const hits = extractHits(v, depth + 1);
+    if (hits.length) return hits;
+  }
+  return [];
+}
+
 /** プロバイダを順に試し、失敗したら次へ。全滅で SearchExhausted。 */
 export class SearchChain implements SearchProvider {
   readonly name: string;
@@ -123,13 +217,36 @@ export interface SearchEnv {
   GOOGLE_CSE_KEY?: string | undefined;
   GOOGLE_CSE_CX?: string | undefined;
   BRAVE_API_KEY?: string | undefined;
+  MONID_API_KEY?: string | undefined;
+  /** 例: "tinyfish" */
+  MONID_SEARCH_PROVIDER?: string | undefined;
+  /** 例: "/search" */
+  MONID_SEARCH_ENDPOINT?: string | undefined;
+  /** JSON。例: {"query":"{query}","maxResults":"{n}"} */
+  MONID_SEARCH_BODY?: string | undefined;
+  /** カンマ区切りで順序を指定。既定: google,brave,monid */
+  SEARCH_ORDER?: string | undefined;
 }
 
-/** 環境変数にある鍵からチェーンを組む。優先: Google → Brave → Wikipedia。 */
+/** 環境変数にある鍵からチェーンを組む。既定の優先: Google → Brave → Monid → (何も無ければ Wikipedia)。 */
 export function providersFromEnv(env: SearchEnv, fetchImpl: typeof fetch = fetch): SearchProvider[] {
-  const out: SearchProvider[] = [];
-  if (env.GOOGLE_CSE_KEY && env.GOOGLE_CSE_CX) out.push(new GoogleCse(env.GOOGLE_CSE_KEY, env.GOOGLE_CSE_CX, fetchImpl));
-  if (env.BRAVE_API_KEY) out.push(new Brave(env.BRAVE_API_KEY, fetchImpl));
+  const available = new Map<string, SearchProvider>();
+  if (env.GOOGLE_CSE_KEY && env.GOOGLE_CSE_CX) available.set("google", new GoogleCse(env.GOOGLE_CSE_KEY, env.GOOGLE_CSE_CX, fetchImpl));
+  if (env.BRAVE_API_KEY) available.set("brave", new Brave(env.BRAVE_API_KEY, fetchImpl));
+  if (env.MONID_API_KEY && env.MONID_SEARCH_PROVIDER && env.MONID_SEARCH_ENDPOINT) {
+    available.set(
+      "monid",
+      new Monid({
+        apiKey: env.MONID_API_KEY,
+        provider: env.MONID_SEARCH_PROVIDER,
+        endpoint: env.MONID_SEARCH_ENDPOINT,
+        bodyTemplate: env.MONID_SEARCH_BODY ? (JSON.parse(env.MONID_SEARCH_BODY) as Record<string, unknown>) : undefined,
+        fetchImpl,
+      }),
+    );
+  }
+  const order = (env.SEARCH_ORDER ?? "google,brave,monid").split(",").map((s) => s.trim()).filter(Boolean);
+  const out = order.map((k) => available.get(k)).filter((p): p is SearchProvider => p !== undefined);
   if (out.length === 0) out.push(new Wikipedia(fetchImpl));
   return out;
 }
