@@ -34,6 +34,7 @@ describe("kana", () => {
     expect(readingCompatible("碧依さくらさん", "さくら")).toBe(false);
     expect(readingCompatible("碧依", "さくら")).toBe(true); // 漢字のみは通す (Jev の reading_match が弾く)
     expect(readingCompatible("Mori Calliope", "もりかりおぺ")).toBe(true);
+    expect(readingCompatible("杵月のあ", "きねつきのあ")).toBe(true);
   });
 });
 
@@ -46,5 +47,12 @@ describe("extractCandidates", () => {
     expect([...extractCandidates("うさだぺこら", hits).keys()]).toContain("兎田ぺこら");
     expect([...extractCandidates("さくらみこ", hits).keys()]).toContain("さくらみこ");
     expect([...extractCandidates("さくらみこ", hits).keys()]).not.toContain("チャンネル");
+  });
+
+  it("keeps 杵月のあ when the parenthesised reading matches きねつきのあ", () => {
+    const hits = [
+      { title: "杵月のあ（きねつきのあ）", url: "https://example.test/kine", snippet: "個人勢のVTuber。" },
+    ];
+    expect([...extractCandidates("きねつきのあ", hits).keys()]).toContain("杵月のあ");
   });
 });
