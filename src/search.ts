@@ -4,6 +4,8 @@
  * どのプロバイダも VTuber のデータは持たず、毎回問い合わせる。
  */
 
+import { defaultFetch } from "./http.js";
+
 export interface SearchHit {
   title: string;
   url: string;
@@ -49,7 +51,7 @@ export class GoogleCse implements SearchProvider {
   constructor(
     private readonly apiKey: string,
     private readonly cx: string,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: typeof fetch = defaultFetch,
   ) {}
 
   async search(query: string, n = 10): Promise<SearchHit[]> {
@@ -66,7 +68,7 @@ export class Brave implements SearchProvider {
   readonly name = "brave";
   constructor(
     private readonly apiKey: string,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: typeof fetch = defaultFetch,
   ) {}
 
   async search(query: string, n = 10): Promise<SearchHit[]> {
@@ -84,7 +86,7 @@ export class Brave implements SearchProvider {
 /** 日本語版 Wikipedia 検索。鍵不要だが大手しか載っていないので開発用フォールバック。 */
 export class Wikipedia implements SearchProvider {
   readonly name = "wikipedia";
-  constructor(private readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(private readonly fetchImpl: typeof fetch = defaultFetch) {}
 
   async search(query: string, n = 10): Promise<SearchHit[]> {
     const q = new URLSearchParams({ action: "query", list: "search", srsearch: query, srlimit: String(n), format: "json", srprop: "snippet" });
@@ -136,7 +138,7 @@ export class Monid implements SearchProvider {
 
   constructor(private readonly opts: MonidOptions) {
     this.baseUrl = opts.baseUrl ?? "https://api.monid.ai";
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.fetchImpl = opts.fetchImpl ?? defaultFetch;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
   }
 
@@ -244,7 +246,7 @@ export interface SearchEnv {
 export const DEFAULT_SEARCH_ORDER = ["monid", "brave", "google"] as const;
 
 /** 環境変数にある鍵からチェーンを組む。既定の優先: Monid → Brave → Google → (何も無ければ Wikipedia)。 */
-export function providersFromEnv(env: SearchEnv, fetchImpl: typeof fetch = fetch): SearchProvider[] {
+export function providersFromEnv(env: SearchEnv, fetchImpl: typeof fetch = defaultFetch): SearchProvider[] {
   const available = new Map<string, SearchProvider>();
   if (env.GOOGLE_CSE_KEY && env.GOOGLE_CSE_CX) available.set("google", new GoogleCse(env.GOOGLE_CSE_KEY, env.GOOGLE_CSE_CX, fetchImpl));
   if (env.BRAVE_API_KEY) available.set("brave", new Brave(env.BRAVE_API_KEY, fetchImpl));

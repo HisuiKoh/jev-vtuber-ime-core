@@ -1,3 +1,4 @@
+export { defaultFetch } from "./http.js";
 export { isValidReading, kataToHira, normalizeReading, readingCompatible, segment } from "./kana.js";
 export type { Segment, SegmentKind } from "./kana.js";
 export { JevError, TypeSafeJev, noulOf } from "./jev.js";
