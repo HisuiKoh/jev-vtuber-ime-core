@@ -251,10 +251,17 @@ export interface ResolveResult {
   provider: string;
   /** 実際に答えたプロバイダ名。チェーンなら SearchChain.lastProvider */
   providerUsed?: string | undefined;
-  /** 一次プロバイダ以外が答えたか */
+  /** 一次プロバイダ以外が答えたか。この resolve 中のどの検索でもフォールバックなら true */
   fallback: boolean;
   hits: number;
   model?: string | undefined;
+  /**
+   * 検索パスの回数。セカンドチャンスの検索を発行したら 2
+   * (候補が増えず Jev を再呼び出ししなかった場合も含む)。
+   */
+  passes: 1 | 2;
+  /** 発行した検索クエリ (1st + セカンドチャンス) */
+  queries: string[];
 }
 
 function searchMeta(search: SearchProvider): Pick<ResolveResult, "providerUsed" | "fallback"> {
@@ -303,39 +310,129 @@ export interface ResolverOptions {
   jev: JevClient;
   search: SearchProvider;
   /** 検索クエリ。既定は「<読み> VTuber」の 1 本 (無料枠を節約)。 */
-  queries?: ((reading: string) => string)[];
+  queries?: ((reading: string) => string)[] | undefined;
+  /** 1 本目で決まらなかったときに、読みを末尾で区切ったクエリを追加で試す。既定 true。 */
+  secondChance?: boolean | undefined;
+  /** セカンドチャンス用のクエリ。既定は defaultSecondChanceQueries。 */
+  secondChanceQueries?: ((reading: string) => string[]) | undefined;
+}
+
+interface Judged {
+  candidates: ResolveCandidate[];
+  best: ResolveCandidate | null;
+  model?: string | undefined;
+}
+
+/**
+ * 読みが 5 文字以上なら、末尾 4・3 文字の前に空白を入れた VTuber クエリ。
+ * head が 2 文字未満になる分割は出さない。
+ */
+export function defaultSecondChanceQueries(reading: string): string[] {
+  if (reading.length < 5) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const n of [4, 3] as const) {
+    const headLen = reading.length - n;
+    if (headLen < 2) continue;
+    const q = `${reading.slice(0, headLen)} ${reading.slice(headLen)} VTuber`;
+    if (seen.has(q)) continue;
+    seen.add(q);
+    out.push(q);
+  }
+  return out;
 }
 
 export class Resolver {
   private readonly jev: JevClient;
   private readonly search: SearchProvider;
   private readonly queries: ((reading: string) => string)[];
+  private readonly secondChance: boolean;
+  private readonly secondChanceQueries: (reading: string) => string[];
 
   constructor(opts: ResolverOptions) {
     this.jev = opts.jev;
     this.search = opts.search;
     this.queries = opts.queries ?? [(r) => `${r} VTuber`];
+    this.secondChance = opts.secondChance ?? true;
+    this.secondChanceQueries = opts.secondChanceQueries ?? defaultSecondChanceQueries;
   }
 
   async resolve(rawReading: string): Promise<ResolveResult> {
     const reading = normalizeReading(rawReading);
     const hits: SearchHit[] = [];
     const seen = new Set<string>();
-    for (const q of this.queries) {
-      for (const h of await this.search.search(q(reading), 10)) {
+    const issued: string[] = [];
+    let fallback = false;
+    let providerUsed: string | undefined;
+
+    const searchOnce = async (query: string): Promise<void> => {
+      issued.push(query);
+      for (const h of await this.search.search(query, 10)) {
         if (!seen.has(h.url)) {
           seen.add(h.url);
           hits.push(h);
         }
       }
-    }
-    const found = extractCandidates(reading, hits);
-    const meta = searchMeta(this.search);
-    if (found.size === 0) {
-      return { reading, candidates: [], best: null, provider: this.search.name, hits: hits.length, ...meta };
+      const meta = searchMeta(this.search);
+      if (meta.providerUsed !== undefined) providerUsed = meta.providerUsed;
+      fallback = fallback || meta.fallback;
+    };
+
+    for (const q of this.queries) {
+      await searchOnce(q(reading));
     }
 
-    // 上位 MAX_CANDIDATES を Jev に渡す
+    const foundFirst = extractCandidates(reading, hits);
+    const judgedFirst = foundFirst.size === 0 ? null : await this.judge(reading, hits, foundFirst);
+    const firstBest = judgedFirst?.best ?? null;
+    const scQueries = this.secondChance && firstBest === null ? this.secondChanceQueries(reading) : [];
+
+    if (scQueries.length === 0) {
+      return this.pack(reading, judgedFirst, hits, issued, 1, providerUsed, fallback);
+    }
+
+    for (const q of scQueries) {
+      await searchOnce(q);
+    }
+    const foundSecond = extractCandidates(reading, hits);
+    let gained = false;
+    for (const name of foundSecond.keys()) {
+      if (!foundFirst.has(name)) {
+        gained = true;
+        break;
+      }
+    }
+    if (gained) {
+      const judgedSecond = await this.judge(reading, hits, foundSecond);
+      return this.pack(reading, judgedSecond, hits, issued, 2, providerUsed, fallback);
+    }
+    return this.pack(reading, judgedFirst, hits, issued, 2, providerUsed, fallback);
+  }
+
+  private pack(
+    reading: string,
+    judged: Judged | null,
+    hits: SearchHit[],
+    issued: string[],
+    passes: 1 | 2,
+    providerUsed: string | undefined,
+    fallback: boolean,
+  ): ResolveResult {
+    return {
+      reading,
+      candidates: judged?.candidates ?? [],
+      best: judged?.best ?? null,
+      provider: this.search.name,
+      providerUsed,
+      fallback,
+      hits: hits.length,
+      model: judged?.model,
+      passes,
+      queries: issued,
+    };
+  }
+
+  private async judge(reading: string, hits: SearchHit[], found: Map<string, Extracted>): Promise<Judged> {
     const ranked = rankCandidates(found).slice(0, MAX_CANDIDATES);
     const criteria: Record<string, string | null> = Object.fromEntries(ranked.map((n) => [n, null]));
     criteria[NONE] = "None of the candidates is the VTuber with this reading";
@@ -389,7 +486,7 @@ export class Resolver {
     }
     candidates.sort((a, b) => b.score - a.score);
     const best = candidates[0] && candidates[0].score >= MIN_SCORE ? candidates[0] : null;
-    return { reading, candidates, best, provider: this.search.name, hits: hits.length, model: resp.model, ...meta };
+    return { candidates, best, model: resp.model };
   }
 }
 

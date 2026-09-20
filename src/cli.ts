@@ -8,8 +8,10 @@ import { isValidReading, normalizeReading } from "./kana.js";
 import { MIN_SCORE, Resolver, type ResolveResult } from "./resolve.js";
 import { SearchChain, SearchExhausted, providersFromEnv } from "./search.js";
 
-const providerLabel = (r: ResolveResult): string =>
-  r.providerUsed && r.providerUsed !== r.provider ? `${r.provider} via ${r.providerUsed}` : r.provider;
+const providerLabel = (r: ResolveResult): string => {
+  const base = r.providerUsed && r.providerUsed !== r.provider ? `${r.provider} via ${r.providerUsed}` : r.provider;
+  return r.passes === 2 ? `${base} (2nd pass)` : base;
+};
 
 /** カレントディレクトリ → パッケージルート の順で .env を探し、未設定の変数だけ環境に入れる。 */
 function loadDotenv(): void {
