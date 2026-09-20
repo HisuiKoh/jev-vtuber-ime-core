@@ -38,10 +38,9 @@ function usage(): void {
   console.error("usage: jev-vtuber-ime [-v] [--json] [--to-name | --to-reading] <読みまたは表記> [...]");
 }
 
-function classify(raw: string, force: Direction | null): Direction {
+function classify(raw: string, force: Exclude<Direction, "invalid"> | null): Direction {
   if (force === "reading") return isValidReading(normalizeReading(raw)) ? "reading" : "invalid";
   if (force === "name") return isValidName(raw) ? "name" : "invalid";
-  if (force === "invalid") return "invalid";
   if (force === null) return detectDirection(raw);
   const _exhaustive: never = force;
   return _exhaustive;
@@ -53,7 +52,7 @@ async function main(argv: string[]): Promise<number> {
   const json = argv.includes("--json");
   const toName = argv.includes("--to-name");
   const toReading = argv.includes("--to-reading");
-  const force: Direction | null = toName ? "reading" : toReading ? "name" : null;
+  const force: Exclude<Direction, "invalid"> | null = toName ? "reading" : toReading ? "name" : null;
   const inputs = argv.filter((a) => !a.startsWith("-"));
   if (inputs.length === 0) {
     usage();
