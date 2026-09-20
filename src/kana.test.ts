@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isValidReading, kataToHira, normalizeReading, readingCompatible, segment } from "./kana.js";
+import { detectDirection, isValidName, isValidReading, kataToHira, normalizeReading, readingCompatible, segment } from "./kana.js";
 import { extractCandidates, isPlausibleName, rankCandidates, tokenize } from "./resolve.js";
 
 const names = (reading: string, text: string): string[] =>
@@ -43,6 +43,34 @@ describe("kana", () => {
     expect(readingCompatible("グウェル・オス・ガール", "ぐうぇるおすがーる")).toBe(true);
     expect(readingCompatible("ギルザレンⅢ世", "ぎるざれんさんせい")).toBe(true);
     expect(readingCompatible("ないおトン", "ないおとん")).toBe(true);
+  });
+});
+
+describe("isValidName", () => {
+  it("accepts written names with kanji, latin, and numerals", () => {
+    expect(isValidName("星街すいせい")).toBe(true);
+    expect(isValidName("Gawr Gura")).toBe(true);
+    expect(isValidName("IRyS")).toBe(true);
+    expect(isValidName("ギルザレンⅢ世")).toBe(true);
+    expect(isValidName("叶")).toBe(true);
+  });
+
+  it("rejects readings, punctuation, URLs, overlong text and year-like tokens", () => {
+    expect(isValidName("ほしまちすいせい")).toBe(false);
+    expect(isValidName("星街（ほしまち）")).toBe(false);
+    expect(isValidName("https://x")).toBe(false);
+    expect(isValidName("あ".repeat(25))).toBe(false);
+    expect(isValidName("2024年")).toBe(false);
+  });
+});
+
+describe("detectDirection", () => {
+  it("classifies reading, name and invalid inputs", () => {
+    expect(detectDirection("ほしまちすいせい")).toBe("reading");
+    expect(detectDirection("ホシマチ スイセイ")).toBe("reading");
+    expect(detectDirection("星街すいせい")).toBe("name");
+    expect(detectDirection("Gawr Gura")).toBe("name");
+    expect(detectDirection("@@@")).toBe("invalid");
   });
 });
 
