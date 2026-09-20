@@ -94,7 +94,9 @@ describe("extractCandidates", () => {
     expect(names("ないおとん", "ないおトン / 渡辺太 - YouTube")).toEqual(["ないおトン", "渡辺太"]);
     expect(names("かなえ", "叶 - YouTube 叶（かなえ）にじさんじ所属")[0]).toBe("叶");
     expect(names("あいりす", "IRyS Ch. hololive-EN")).toContain("IRyS");
+    expect(names("あいりす", "IRyS Ch. hololive-EN")).not.toContain("hololive-EN");
     expect(names("にのまえいなにす", "Ninomae Ina'nis Ch. hololive-EN")).toContain("Ninomae Ina'nis");
+    expect(names("よすみ", "yosumi（よすみ） 個人勢のバーチャルYouTuber")).toContain("yosumi");
   });
 
   it("ranks the token confirmed by a parenthesised reading first and trims leading stopwords", () => {
@@ -109,5 +111,22 @@ describe("extractCandidates", () => {
       { title: "杵月のあ（きねつきのあ）", url: "https://example.test/kine", snippet: "個人勢のVTuber。" },
     ];
     expect([...extractCandidates("きねつきのあ", hits).keys()]).toContain("杵月のあ");
+  });
+
+  it("ranks Japanese names ahead of latin search boilerplate and drops lowercase latin noise", () => {
+    const ranked = names(
+      "よみ",
+      "We've detected that JavaScript is disabled in this browser. Please enable JavaScript... " +
+        "About Press Copyright Contact us Creators Advertise Developers Terms Privacy Policy & Safety How YouTube works Test new features © 2026 Google LLC " +
+        "夜魅🍷 -Yomi- (@Yomi_Vtuber) on X 堕天使系Vtuberの夜魅(よみ)です",
+    );
+    expect(ranked).toContain("夜魅");
+    const yomiAt = ranked.indexOf("夜魅");
+    const firstLatinAt = ranked.findIndex((n) => !/[\u3041-\u3096\u30a1-\u30fa\u30fb\u30fc\u4e00-\u9fff\u3005]/u.test(n));
+    expect(firstLatinAt).toBeGreaterThanOrEqual(0);
+    expect(yomiAt).toBeLessThan(firstLatinAt);
+    expect(ranked).not.toContain("detected");
+    expect(ranked).not.toContain("disabled");
+    expect(ranked).not.toContain("browser");
   });
 });

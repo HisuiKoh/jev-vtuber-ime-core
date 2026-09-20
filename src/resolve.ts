@@ -24,6 +24,11 @@ const TOKEN_RE = new RegExp(TOKEN, "gu");
 const WORD_RE = new RegExp(`^${WORD}$`, "u");
 // 名前には日本語か英字が少なくとも 1 文字は要る (年号・数字・ローマ数字だけの語を弾く)
 const NAME_LETTER_RE = new RegExp(`[${JA}A-Za-z\\uff21-\\uff3a\\uff41-\\uff5a]`, "u");
+const HAS_JA_RE = new RegExp(`[${JA}]`, "u");
+/** かな・長音・中黒・漢字・々 を 1 文字でも含むか。 */
+const hasJapanese = (token: string): boolean => HAS_JA_RE.test(token);
+/** 大文字または数字始まり。ラテン名 (IRyS、Gawr Gura) と小文字のボイラープレートを分ける。 */
+const NAME_WORD_START_RE = /^[A-Z0-9\u2160-\u217f\uff10-\uff19\uff21-\uff3a]/u;
 const KANJI_ONLY_RE = /^[\u4e00-\u9fff\u3005]$/u;
 // 「星街すいせい（ほしまち すいせい）」「Gawr Gura（がうる・ぐら）」のように括弧書きされた読み。表記側は直前のトークンを位置で引く
 const PAREN_READING_RE = /[（(]\s*([\u3041-\u3096\u30a1-\u30fa\u30fb\u30fc\s]+?)\s*[）)]/gu;
@@ -66,7 +71,7 @@ export interface Extracted {
 
 /** 大文字始まり (または数字始まり) の英字語で、ストップワードでないもの。空白区切りで連ねて 1 つの名前とみなす対象。 */
 const isNameWord = (tok: string): boolean =>
-  WORD_RE.test(tok) && /^[A-Z0-9\u2160-\u217f\uff10-\uff19\uff21-\uff3a]/u.test(tok) && !isStopword(tok);
+  WORD_RE.test(tok) && NAME_WORD_START_RE.test(tok) && !isStopword(tok);
 
 /** 中黒だけの端を落とす (「・オス・」のような切れ端)。 */
 const trimToken = (tok: string): string => tok.replace(/^\u30fb+|\u30fb+$/gu, "");
@@ -149,6 +154,8 @@ export function extractCandidates(reading: string, hits: SearchHit[]): Map<strin
   const add = (tok: string, url: string, confirmed: boolean): void => {
     // 全かな名は表記 = 読みなので、入力そのものも候補になる
     if (!isPlausibleName(tok)) return;
+    // ラテン専用の小文字始まりは検索ボイラープレート。括弧書きで読みが確認された表記は通す
+    if (!confirmed && !hasJapanese(tok) && !NAME_WORD_START_RE.test(tok)) return;
     if (!readingCompatible(tok, reading)) return;
     const e = out.get(tok) ?? { evidence: [], readingConfirmed: 0 };
     if (url && !e.evidence.includes(url)) e.evidence.push(url);
@@ -165,10 +172,13 @@ export function extractCandidates(reading: string, hits: SearchHit[]): Map<strin
   return out;
 }
 
-/** 括弧書きで読みが確認できたもの → 根拠の多いもの の順。 */
+/** 括弧書きで読みが確認できたもの → 日本語を含むもの → 根拠の多いもの の順。 */
 export function rankCandidates(found: Map<string, Extracted>): string[] {
   return [...found.entries()]
-    .sort(([, a], [, b]) => b.readingConfirmed - a.readingConfirmed || b.evidence.length - a.evidence.length)
+    .sort(([nameA, a], [nameB, b]) =>
+      b.readingConfirmed - a.readingConfirmed ||
+      Number(hasJapanese(nameB)) - Number(hasJapanese(nameA)) ||
+      b.evidence.length - a.evidence.length)
     .map(([name]) => name);
 }
 
