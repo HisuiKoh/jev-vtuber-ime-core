@@ -82,9 +82,12 @@ export interface Token {
   end: number;
 }
 
+const isNameSpace = (ch: string): boolean => ch === " " || ch === "\u3000";
+
 /**
  * テキストから名前らしいトークンを列挙する。空白 1 つで連なる名前語 (大文字始まり・非ストップワード) は
  * 2〜MAX_LATIN_WORDS 語の連結も候補にする (Gawr Gura、Ninomae Ina'nis)。
+ * 日本語を含むトークンが空白 1 つ (U+0020 または U+3000) で隣り合うときは、空白なしの連結も出す (最大 2 語)。
  */
 export function tokenize(text: string): Token[] {
   const matches = [...text.matchAll(TOKEN_RE)];
@@ -93,6 +96,14 @@ export function tokenize(text: string): Token[] {
     const m = matches[i]!;
     const single = trimToken(m[0]);
     if (single) out.push({ text: single, end: m.index + m[0].length });
+    const jaNext = matches[i + 1];
+    if (jaNext && hasJapanese(m[0]) && hasJapanese(jaNext[0])) {
+      const gap = text.slice(m.index + m[0].length, jaNext.index);
+      if (gap.length === 1 && isNameSpace(gap)) {
+        const joinedJa = trimToken(m[0] + jaNext[0]);
+        if (joinedJa) out.push({ text: joinedJa, end: jaNext.index + jaNext[0].length });
+      }
+    }
     if (!isNameWord(m[0])) continue;
     let joined = m[0];
     let end = m.index + m[0].length;
@@ -120,6 +131,100 @@ export function parenConfirmedNames(text: string, tokens: Token[], reading: stri
     if (ending.length === 0) continue;
     out.push(ending.reduce((a, b) => (b.text.length > a.text.length ? b : a)).text);
   }
+  return out;
+}
+
+/** 読み案内の対象となるかな (ひらがな・カタカナ・長音・中黒)。 */
+const isGuidedKana = (ch: string): boolean => {
+  const c = ch.codePointAt(0)!;
+  return (c >= 0x3041 && c <= 0x3096) || (c >= 0x30a1 && c <= 0x30fa) || c === 0x30fc || c === 0x30fb;
+};
+
+/** 漢字・々。名前の漢字列はこれで始まる。 */
+const isKanjiCore = (ch: string): boolean => {
+  const c = ch.codePointAt(0)!;
+  return (c >= 0x4e00 && c <= 0x9fff) || c === 0x3005;
+};
+
+/** 漢字列の内側に許す ヶ・ノ (月ノ美兔)。 */
+const isKanjiInner = (ch: string): boolean => isKanjiCore(ch) || ch === "\u30f6" || ch === "\u30ce";
+
+/**
+ * 読みに錨を置いてテキストから表記候補を拾う。かな列が読みそのもの、または漢字 1〜4 字 + 読み末尾のかな。
+ * `reading` は正規化済みひらがな。
+ */
+export function readingGuidedCandidates(text: string, reading: string): string[] {
+  if (!reading) return [];
+  const chars = [...text];
+  const n = chars.length;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (s: string): void => {
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push(s);
+  };
+
+  const suffixes: string[] = [];
+  for (let k = 2; k <= reading.length - 1; k++) {
+    suffixes.push(reading.slice(reading.length - k));
+  }
+
+  let i = 0;
+  while (i < n) {
+    if (!isGuidedKana(chars[i]!)) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < n && isGuidedKana(chars[j]!)) j++;
+
+    for (let s = i; s < j; s++) {
+      let norm = "";
+      for (let e = s; e < j; e++) {
+        norm += normalizeReading(chars[e]!);
+        if (norm.length === 0) continue;
+        if (!reading.startsWith(norm)) break;
+        if (norm === reading) add(chars.slice(s, e + 1).join(""));
+      }
+    }
+
+    if (suffixes.length > 0) {
+      let kanjiEnd = i;
+      if (kanjiEnd > 0 && isNameSpace(chars[kanjiEnd - 1]!)) kanjiEnd--;
+      let kanjiStart = kanjiEnd;
+      while (kanjiStart > 0 && isKanjiInner(chars[kanjiStart - 1]!)) kanjiStart--;
+      while (kanjiStart < kanjiEnd && !isKanjiCore(chars[kanjiStart]!)) kanjiStart++;
+      const kanjiLen = kanjiEnd - kanjiStart;
+      if (kanjiLen > 0) {
+        for (const suffix of suffixes) {
+          let norm = "";
+          let matchedEnd = -1;
+          for (let e = i; e < j; e++) {
+            norm += normalizeReading(chars[e]!);
+            if (norm.length === 0) continue;
+            if (!suffix.startsWith(norm)) break;
+            if (norm === suffix) {
+              matchedEnd = e + 1;
+              break;
+            }
+          }
+          if (matchedEnd < 0) continue;
+          const kanaPart = chars.slice(i, matchedEnd).join("");
+          const maxK = Math.min(4, kanjiLen);
+          for (let len = 1; len <= maxK; len++) {
+            const pieceStart = kanjiEnd - len;
+            const first = chars[pieceStart];
+            if (!first || !isKanjiCore(first)) continue;
+            add(chars.slice(pieceStart, kanjiEnd).join("") + kanaPart);
+          }
+        }
+      }
+    }
+
+    i = j;
+  }
+
   return out;
 }
 
@@ -179,6 +284,7 @@ export function extractCandidates(reading: string, hits: SearchHit[]): Map<strin
     // 括弧書きの読みが入力と一致する表記は最優先
     for (const name of parenConfirmedNames(text, tokens, reading)) add(name, h.url, true);
     for (const t of tokens) add(t.text, h.url, false);
+    for (const name of readingGuidedCandidates(text, reading)) add(name, h.url, false);
   }
   return out;
 }

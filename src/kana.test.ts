@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { isValidReading, kataToHira, normalizeReading, readingCompatible, segment } from "./kana.js";
-import { extractCandidates, isPlausibleName, rankCandidates, tokenize } from "./resolve.js";
+import { extractCandidates, isPlausibleName, rankCandidates, readingGuidedCandidates, tokenize } from "./resolve.js";
 
 const names = (reading: string, text: string): string[] =>
   rankCandidates(extractCandidates(reading, [{ title: text, url: "https://example.com", snippet: "" }]));
@@ -89,7 +89,8 @@ describe("extractCandidates", () => {
   });
 
   it("extracts names with roman numerals, middle dots, single kanji and latin letters", () => {
-    expect(names("ぎるざれんさんせい", "ギルザレンⅢ世 にじさんじ所属 - YouTube")).toEqual(["ギルザレンⅢ世"]);
+    expect(names("ぎるざれんさんせい", "ギルザレンⅢ世 にじさんじ所属 - YouTube")).toContain("ギルザレンⅢ世");
+    expect(names("ぎるざれんさんせい", "ギルザレンⅢ世 にじさんじ所属 - YouTube")[0]).toBe("ギルザレンⅢ世");
     expect(names("ぐうぇるおすがーる", "グウェル・オス・ガール にじさんじ VTuber ・オス・")).toEqual(["グウェル・オス・ガール"]);
     expect(names("ないおとん", "ないおトン / 渡辺太 - YouTube")).toEqual(["ないおトン", "渡辺太"]);
     expect(names("かなえ", "叶 - YouTube 叶（かなえ）にじさんじ所属")[0]).toBe("叶");
@@ -128,5 +129,31 @@ describe("extractCandidates", () => {
     expect(ranked).not.toContain("detected");
     expect(ranked).not.toContain("disabled");
     expect(ranked).not.toContain("browser");
+  });
+
+  it("joins a Japanese family/given pair split by one space", () => {
+    expect(names("ねこつきたくみん", "【ゲームチャンネル】猫月 たくみん -nekotsuki takumin-")).toContain("猫月たくみん");
+  });
+
+  it("cuts a name glued to surrounding text using the reading as an anchor", () => {
+    const glued = names("ねこつきたくみん", "※ 猫月たくみんさん視点 → https://youtu.be/x");
+    expect(glued).toContain("猫月たくみん");
+    expect(glued).not.toContain("猫月たくみんさん視点");
+    expect(names("うらどりぺあ", "気圧と休日に発生する用事というイベントにうらどりぺあ、ついに壊れる")).toContain("うらどりぺあ");
+  });
+
+  it("keeps mixed-script kana that normalizes to the reading", () => {
+    expect(readingGuidedCandidates("麻雀プロVtuberのないおトン / 渡辺太", "ないおとん")).toContain("ないおトン");
+  });
+
+  it("still ranks a parenthesised Japanese name first", () => {
+    expect(names("うさだぺこら", "兎田ぺこら（うさだ ぺこら）とは")[0]).toBe("兎田ぺこら");
+  });
+
+  it("stays fast on long kana and kanji runs", () => {
+    const text = "あ".repeat(300) + "漢".repeat(300);
+    const t = Date.now();
+    extractCandidates("あ".repeat(20), [{ title: text, url: "https://x", snippet: text }]);
+    expect(Date.now() - t).toBeLessThan(200);
   });
 });
