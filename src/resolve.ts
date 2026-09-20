@@ -82,9 +82,12 @@ export interface Token {
   end: number;
 }
 
+const isNameSpace = (ch: string): boolean => ch === " " || ch === "\u3000";
+
 /**
  * テキストから名前らしいトークンを列挙する。空白 1 つで連なる名前語 (大文字始まり・非ストップワード) は
  * 2〜MAX_LATIN_WORDS 語の連結も候補にする (Gawr Gura、Ninomae Ina'nis)。
+ * 日本語を含むトークンが空白 1 つ (U+0020 または U+3000) で隣り合うときは、空白なしの連結も出す (最大 2 語)。
  */
 export function tokenize(text: string): Token[] {
   const matches = [...text.matchAll(TOKEN_RE)];
@@ -93,6 +96,14 @@ export function tokenize(text: string): Token[] {
     const m = matches[i]!;
     const single = trimToken(m[0]);
     if (single) out.push({ text: single, end: m.index + m[0].length });
+    const jaNext = matches[i + 1];
+    if (jaNext && hasJapanese(m[0]) && hasJapanese(jaNext[0])) {
+      const gap = text.slice(m.index + m[0].length, jaNext.index);
+      if (gap.length === 1 && isNameSpace(gap)) {
+        const joinedJa = trimToken(m[0] + jaNext[0]);
+        if (joinedJa) out.push({ text: joinedJa, end: jaNext.index + jaNext[0].length });
+      }
+    }
     if (!isNameWord(m[0])) continue;
     let joined = m[0];
     let end = m.index + m[0].length;
@@ -123,6 +134,100 @@ export function parenConfirmedNames(text: string, tokens: Token[], reading: stri
   return out;
 }
 
+/** 読み案内の対象となるかな (ひらがな・カタカナ・長音・中黒)。 */
+const isGuidedKana = (ch: string): boolean => {
+  const c = ch.codePointAt(0)!;
+  return (c >= 0x3041 && c <= 0x3096) || (c >= 0x30a1 && c <= 0x30fa) || c === 0x30fc || c === 0x30fb;
+};
+
+/** 漢字・々。名前の漢字列はこれで始まる。 */
+const isKanjiCore = (ch: string): boolean => {
+  const c = ch.codePointAt(0)!;
+  return (c >= 0x4e00 && c <= 0x9fff) || c === 0x3005;
+};
+
+/** 漢字列の内側に許す ヶ・ノ (月ノ美兔)。 */
+const isKanjiInner = (ch: string): boolean => isKanjiCore(ch) || ch === "\u30f6" || ch === "\u30ce";
+
+/**
+ * 読みに錨を置いてテキストから表記候補を拾う。かな列が読みそのもの、または漢字 1〜4 字 + 読み末尾のかな。
+ * `reading` は正規化済みひらがな。
+ */
+export function readingGuidedCandidates(text: string, reading: string): string[] {
+  if (!reading) return [];
+  const chars = [...text];
+  const n = chars.length;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (s: string): void => {
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push(s);
+  };
+
+  const suffixes: string[] = [];
+  for (let k = 2; k <= reading.length - 1; k++) {
+    suffixes.push(reading.slice(reading.length - k));
+  }
+
+  let i = 0;
+  while (i < n) {
+    if (!isGuidedKana(chars[i]!)) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < n && isGuidedKana(chars[j]!)) j++;
+
+    for (let s = i; s < j; s++) {
+      let norm = "";
+      for (let e = s; e < j; e++) {
+        norm += normalizeReading(chars[e]!);
+        if (norm.length === 0) continue;
+        if (!reading.startsWith(norm)) break;
+        if (norm === reading) add(chars.slice(s, e + 1).join(""));
+      }
+    }
+
+    if (suffixes.length > 0) {
+      let kanjiEnd = i;
+      if (kanjiEnd > 0 && isNameSpace(chars[kanjiEnd - 1]!)) kanjiEnd--;
+      let kanjiStart = kanjiEnd;
+      while (kanjiStart > 0 && isKanjiInner(chars[kanjiStart - 1]!)) kanjiStart--;
+      while (kanjiStart < kanjiEnd && !isKanjiCore(chars[kanjiStart]!)) kanjiStart++;
+      const kanjiLen = kanjiEnd - kanjiStart;
+      if (kanjiLen > 0) {
+        for (const suffix of suffixes) {
+          let norm = "";
+          let matchedEnd = -1;
+          for (let e = i; e < j; e++) {
+            norm += normalizeReading(chars[e]!);
+            if (norm.length === 0) continue;
+            if (!suffix.startsWith(norm)) break;
+            if (norm === suffix) {
+              matchedEnd = e + 1;
+              break;
+            }
+          }
+          if (matchedEnd < 0) continue;
+          const kanaPart = chars.slice(i, matchedEnd).join("");
+          const maxK = Math.min(4, kanjiLen);
+          for (let len = 1; len <= maxK; len++) {
+            const pieceStart = kanjiEnd - len;
+            const first = chars[pieceStart];
+            if (!first || !isKanjiCore(first)) continue;
+            add(chars.slice(pieceStart, kanjiEnd).join("") + kanaPart);
+          }
+        }
+      }
+    }
+
+    i = j;
+  }
+
+  return out;
+}
+
 export interface ResolveCandidate {
   name: string;
   /** who (Choice) の確率 */
@@ -146,10 +251,17 @@ export interface ResolveResult {
   provider: string;
   /** 実際に答えたプロバイダ名。チェーンなら SearchChain.lastProvider */
   providerUsed?: string | undefined;
-  /** 一次プロバイダ以外が答えたか */
+  /** 一次プロバイダ以外が答えたか。この resolve 中のどの検索でもフォールバックなら true */
   fallback: boolean;
   hits: number;
   model?: string | undefined;
+  /**
+   * 検索パスの回数。セカンドチャンスの検索を発行したら 2
+   * (候補が増えず Jev を再呼び出ししなかった場合も含む)。
+   */
+  passes: 1 | 2;
+  /** 発行した検索クエリ (1st + セカンドチャンス) */
+  queries: string[];
 }
 
 function searchMeta(search: SearchProvider): Pick<ResolveResult, "providerUsed" | "fallback"> {
@@ -179,6 +291,7 @@ export function extractCandidates(reading: string, hits: SearchHit[]): Map<strin
     // 括弧書きの読みが入力と一致する表記は最優先
     for (const name of parenConfirmedNames(text, tokens, reading)) add(name, h.url, true);
     for (const t of tokens) add(t.text, h.url, false);
+    for (const name of readingGuidedCandidates(text, reading)) add(name, h.url, false);
   }
   return out;
 }
@@ -197,39 +310,129 @@ export interface ResolverOptions {
   jev: JevClient;
   search: SearchProvider;
   /** 検索クエリ。既定は「<読み> VTuber」の 1 本 (無料枠を節約)。 */
-  queries?: ((reading: string) => string)[];
+  queries?: ((reading: string) => string)[] | undefined;
+  /** 1 本目で決まらなかったときに、読みを末尾で区切ったクエリを追加で試す。既定 true。 */
+  secondChance?: boolean | undefined;
+  /** セカンドチャンス用のクエリ。既定は defaultSecondChanceQueries。 */
+  secondChanceQueries?: ((reading: string) => string[]) | undefined;
+}
+
+interface Judged {
+  candidates: ResolveCandidate[];
+  best: ResolveCandidate | null;
+  model?: string | undefined;
+}
+
+/**
+ * 読みが 5 文字以上なら、末尾 4・3 文字の前に空白を入れた VTuber クエリ。
+ * head が 2 文字未満になる分割は出さない。
+ */
+export function defaultSecondChanceQueries(reading: string): string[] {
+  if (reading.length < 5) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const n of [4, 3] as const) {
+    const headLen = reading.length - n;
+    if (headLen < 2) continue;
+    const q = `${reading.slice(0, headLen)} ${reading.slice(headLen)} VTuber`;
+    if (seen.has(q)) continue;
+    seen.add(q);
+    out.push(q);
+  }
+  return out;
 }
 
 export class Resolver {
   private readonly jev: JevClient;
   private readonly search: SearchProvider;
   private readonly queries: ((reading: string) => string)[];
+  private readonly secondChance: boolean;
+  private readonly secondChanceQueries: (reading: string) => string[];
 
   constructor(opts: ResolverOptions) {
     this.jev = opts.jev;
     this.search = opts.search;
     this.queries = opts.queries ?? [(r) => `${r} VTuber`];
+    this.secondChance = opts.secondChance ?? true;
+    this.secondChanceQueries = opts.secondChanceQueries ?? defaultSecondChanceQueries;
   }
 
   async resolve(rawReading: string): Promise<ResolveResult> {
     const reading = normalizeReading(rawReading);
     const hits: SearchHit[] = [];
     const seen = new Set<string>();
-    for (const q of this.queries) {
-      for (const h of await this.search.search(q(reading), 10)) {
+    const issued: string[] = [];
+    let fallback = false;
+    let providerUsed: string | undefined;
+
+    const searchOnce = async (query: string): Promise<void> => {
+      issued.push(query);
+      for (const h of await this.search.search(query, 10)) {
         if (!seen.has(h.url)) {
           seen.add(h.url);
           hits.push(h);
         }
       }
-    }
-    const found = extractCandidates(reading, hits);
-    const meta = searchMeta(this.search);
-    if (found.size === 0) {
-      return { reading, candidates: [], best: null, provider: this.search.name, hits: hits.length, ...meta };
+      const meta = searchMeta(this.search);
+      if (meta.providerUsed !== undefined) providerUsed = meta.providerUsed;
+      fallback = fallback || meta.fallback;
+    };
+
+    for (const q of this.queries) {
+      await searchOnce(q(reading));
     }
 
-    // 上位 MAX_CANDIDATES を Jev に渡す
+    const foundFirst = extractCandidates(reading, hits);
+    const judgedFirst = foundFirst.size === 0 ? null : await this.judge(reading, hits, foundFirst);
+    const firstBest = judgedFirst?.best ?? null;
+    const scQueries = this.secondChance && firstBest === null ? this.secondChanceQueries(reading) : [];
+
+    if (scQueries.length === 0) {
+      return this.pack(reading, judgedFirst, hits, issued, 1, providerUsed, fallback);
+    }
+
+    for (const q of scQueries) {
+      await searchOnce(q);
+    }
+    const foundSecond = extractCandidates(reading, hits);
+    let gained = false;
+    for (const name of foundSecond.keys()) {
+      if (!foundFirst.has(name)) {
+        gained = true;
+        break;
+      }
+    }
+    if (gained) {
+      const judgedSecond = await this.judge(reading, hits, foundSecond);
+      return this.pack(reading, judgedSecond, hits, issued, 2, providerUsed, fallback);
+    }
+    return this.pack(reading, judgedFirst, hits, issued, 2, providerUsed, fallback);
+  }
+
+  private pack(
+    reading: string,
+    judged: Judged | null,
+    hits: SearchHit[],
+    issued: string[],
+    passes: 1 | 2,
+    providerUsed: string | undefined,
+    fallback: boolean,
+  ): ResolveResult {
+    return {
+      reading,
+      candidates: judged?.candidates ?? [],
+      best: judged?.best ?? null,
+      provider: this.search.name,
+      providerUsed,
+      fallback,
+      hits: hits.length,
+      model: judged?.model,
+      passes,
+      queries: issued,
+    };
+  }
+
+  private async judge(reading: string, hits: SearchHit[], found: Map<string, Extracted>): Promise<Judged> {
     const ranked = rankCandidates(found).slice(0, MAX_CANDIDATES);
     const criteria: Record<string, string | null> = Object.fromEntries(ranked.map((n) => [n, null]));
     criteria[NONE] = "None of the candidates is the VTuber with this reading";
@@ -283,7 +486,7 @@ export class Resolver {
     }
     candidates.sort((a, b) => b.score - a.score);
     const best = candidates[0] && candidates[0].score >= MIN_SCORE ? candidates[0] : null;
-    return { reading, candidates, best, provider: this.search.name, hits: hits.length, model: resp.model, ...meta };
+    return { candidates, best, model: resp.model };
   }
 }
 
