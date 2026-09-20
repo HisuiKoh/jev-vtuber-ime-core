@@ -115,6 +115,12 @@ export interface MonidOptions {
   /** ポーリング上限 (ms)。Monid の run は非同期で 1〜120 秒かかる */
   timeoutMs?: number | undefined;
   fetchImpl?: typeof fetch | undefined;
+  /** HTTP 429 の再試行回数。既定 1 */
+  retryOn429?: number | undefined;
+  /** 429 再試行の待ち時間 (ms)。試行回数を掛けて backoff。既定 1500 */
+  retryDelayMs?: number | undefined;
+  /** 待ち時間の実装。テスト用。既定は setTimeout */
+  sleep?: ((ms: number) => Promise<void>) | undefined;
 }
 
 export const MONID_DEFAULTS = {
@@ -124,32 +130,49 @@ export const MONID_DEFAULTS = {
   inputTemplate: { query: "{query}", location: "JP", language: "ja" },
 };
 
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 /**
  * Monid (https://monid.ai) 経由の検索。Monid は多数のツールを 1 つの残高で呼ぶ仲介で、
  * 既定の TinyFish /search は $0/call。run を投げて runId をポーリングする非同期 API (typ. 3 秒)。
  * ツールごとに入出力が違うので provider / endpoint / 入力は設定で与え、出力は
  * 「url を持つオブジェクトの配列」を探して SearchHit に寄せる。
+ * HTTP 429 は既定で 1 回再試行してから SearchUnavailable にする。
  */
 export class Monid implements SearchProvider {
   readonly name = "monid";
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly retryOn429: number;
+  private readonly retryDelayMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(private readonly opts: MonidOptions) {
     this.baseUrl = opts.baseUrl ?? "https://api.monid.ai";
     this.fetchImpl = opts.fetchImpl ?? defaultFetch;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
+    this.retryOn429 = opts.retryOn429 ?? 1;
+    this.retryDelayMs = opts.retryDelayMs ?? 1500;
+    this.sleep = opts.sleep ?? defaultSleep;
   }
 
   private async request(method: string, path: string, body?: unknown): Promise<unknown> {
-    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${this.opts.apiKey}`, "content-type": "application/json", "x-monid-client": "jev-vtuber-ime" },
-      body: body === undefined ? null : JSON.stringify(body),
-    });
-    if (!res.ok) throw new SearchUnavailable(this.name, `HTTP ${res.status}`, res.status);
-    return res.status === 204 ? null : res.json();
+    let retries = 0;
+    for (;;) {
+      const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${this.opts.apiKey}`, "content-type": "application/json", "x-monid-client": "jev-vtuber-ime" },
+        body: body === undefined ? null : JSON.stringify(body),
+      });
+      if (res.status === 429 && retries < this.retryOn429) {
+        retries += 1;
+        await this.sleep(this.retryDelayMs * retries);
+        continue;
+      }
+      if (!res.ok) throw new SearchUnavailable(this.name, `HTTP ${res.status}`, res.status);
+      return res.status === 204 ? null : res.json();
+    }
   }
 
   async search(query: string, n = 10): Promise<SearchHit[]> {
