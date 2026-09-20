@@ -2,7 +2,7 @@
 
 import { type Answer, type JevClient, type Question, noulOf } from "./jev.js";
 import { normalizeReading, readingCompatible } from "./kana.js";
-import type { SearchHit, SearchProvider } from "./search.js";
+import { SearchChain, type SearchHit, type SearchProvider } from "./search.js";
 
 export const NONE = "NONE";
 export const MAX_CANDIDATES = 40;
@@ -144,8 +144,19 @@ export interface ResolveResult {
   /** MIN_SCORE 以上の最上位。無ければ null = 見つかりませんでした */
   best: ResolveCandidate | null;
   provider: string;
+  /** 実際に答えたプロバイダ名。チェーンなら SearchChain.lastProvider */
+  providerUsed?: string | undefined;
+  /** 一次プロバイダ以外が答えたか */
+  fallback: boolean;
   hits: number;
   model?: string | undefined;
+}
+
+function searchMeta(search: SearchProvider): Pick<ResolveResult, "providerUsed" | "fallback"> {
+  if (search instanceof SearchChain) {
+    return { providerUsed: search.lastProvider ?? undefined, fallback: search.lastWasFallback };
+  }
+  return { providerUsed: search.name, fallback: false };
 }
 
 /** 検索結果から名前候補と根拠を集める。 */
@@ -213,8 +224,9 @@ export class Resolver {
       }
     }
     const found = extractCandidates(reading, hits);
+    const meta = searchMeta(this.search);
     if (found.size === 0) {
-      return { reading, candidates: [], best: null, provider: this.search.name, hits: hits.length };
+      return { reading, candidates: [], best: null, provider: this.search.name, hits: hits.length, ...meta };
     }
 
     // 上位 MAX_CANDIDATES を Jev に渡す
@@ -271,7 +283,7 @@ export class Resolver {
     }
     candidates.sort((a, b) => b.score - a.score);
     const best = candidates[0] && candidates[0].score >= MIN_SCORE ? candidates[0] : null;
-    return { reading, candidates, best, provider: this.search.name, hits: hits.length, model: resp.model };
+    return { reading, candidates, best, provider: this.search.name, hits: hits.length, model: resp.model, ...meta };
   }
 }
 
