@@ -4,7 +4,8 @@ import { dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { TypeSafeJev } from "./jev.js";
-import { isValidReading, normalizeReading } from "./kana.js";
+import { type Direction, detectDirection, isValidName, isValidReading, normalizeReading } from "./kana.js";
+import { ReadingResolver } from "./reading.js";
 import { MIN_SCORE, Resolver } from "./resolve.js";
 import { SearchChain, SearchExhausted, providersFromEnv } from "./search.js";
 
@@ -34,15 +35,27 @@ function loadDotenv(): void {
 }
 
 function usage(): void {
-  console.error("usage: jev-vtuber-ime [-v] [--json] <読み> [<読み> ...]");
+  console.error("usage: jev-vtuber-ime [-v] [--json] [--to-name | --to-reading] <読みまたは表記> [...]");
+}
+
+function classify(raw: string, force: Direction | null): Direction {
+  if (force === "reading") return isValidReading(normalizeReading(raw)) ? "reading" : "invalid";
+  if (force === "name") return isValidName(raw) ? "name" : "invalid";
+  if (force === "invalid") return "invalid";
+  if (force === null) return detectDirection(raw);
+  const _exhaustive: never = force;
+  return _exhaustive;
 }
 
 async function main(argv: string[]): Promise<number> {
   loadDotenv();
   const verbose = argv.includes("-v") || argv.includes("--verbose");
   const json = argv.includes("--json");
-  const readings = argv.filter((a) => !a.startsWith("-"));
-  if (readings.length === 0) {
+  const toName = argv.includes("--to-name");
+  const toReading = argv.includes("--to-reading");
+  const force: Direction | null = toName ? "reading" : toReading ? "name" : null;
+  const inputs = argv.filter((a) => !a.startsWith("-"));
+  if (inputs.length === 0) {
     usage();
     return 2;
   }
@@ -51,42 +64,85 @@ async function main(argv: string[]): Promise<number> {
     console.error("TYPESAFE_API_KEY が設定されていません。環境変数か .env (.env.example 参照) で指定してください。");
     return 2;
   }
-  const resolver = new Resolver({ jev: new TypeSafeJev({ apiKey }), search: new SearchChain(providersFromEnv(process.env)) });
+  const search = new SearchChain(providersFromEnv(process.env));
+  const jev = new TypeSafeJev({ apiKey });
+  const resolver = new Resolver({ jev, search });
+  const readingResolver = new ReadingResolver({ jev, search });
 
   const results = [];
-  for (const raw of readings) {
-    const reading = normalizeReading(raw);
-    if (!isValidReading(reading)) {
-      console.log(`${raw} → 読み (ひらがな/カタカナ、20 文字以内) を入力してください`);
-      continue;
-    }
-    try {
-      const r = await resolver.resolve(reading);
-      results.push(r);
-      if (json) continue;
-      if (r.best) {
-        console.log(
-          `${r.reading} → ${r.best.name}  (who ${r.best.probability.toFixed(2)} × vtuber ${r.best.isVtuber.toFixed(2)} × ` +
-            `reading ${r.best.readingMatch.toFixed(2)}, ${r.provider}, ${r.hits} hits)`,
-        );
-      } else {
-        console.log(`${r.reading} → 見つかりませんでした  [${r.provider}, ${r.hits} hits]`);
-      }
-      if (verbose) {
-        for (const c of r.candidates.slice(0, 6)) {
-          if (c.probability < 0.005) continue;
-          const mark = c.score >= MIN_SCORE ? "*" : " ";
-          console.log(
-            `  ${mark} ${c.name.padEnd(14)} who=${c.probability.toFixed(2)} vtuber=${c.isVtuber.toFixed(2)} ` +
-              `reading=${c.readingMatch.toFixed(2)}  ${c.evidence[0] ?? ""}`,
-          );
+  for (const raw of inputs) {
+    const direction = classify(raw, force);
+    switch (direction) {
+      case "invalid":
+        console.log(`${raw} → 読み (ひらがな/カタカナ、20 文字以内) か表記 (24 文字以内) を入力してください`);
+        continue;
+      case "reading": {
+        try {
+          const r = await resolver.resolve(raw);
+          results.push(r);
+          if (json) continue;
+          if (r.best) {
+            console.log(
+              `${r.reading} → ${r.best.name}  (who ${r.best.probability.toFixed(2)} × vtuber ${r.best.isVtuber.toFixed(2)} × ` +
+                `reading ${r.best.readingMatch.toFixed(2)}, ${r.provider}, ${r.hits} hits)`,
+            );
+          } else {
+            console.log(`${r.reading} → 見つかりませんでした  [${r.provider}, ${r.hits} hits]`);
+          }
+          if (verbose) {
+            for (const c of r.candidates.slice(0, 6)) {
+              if (c.probability < 0.005) continue;
+              const mark = c.score >= MIN_SCORE ? "*" : " ";
+              console.log(
+                `  ${mark} ${c.name.padEnd(14)} who=${c.probability.toFixed(2)} vtuber=${c.isVtuber.toFixed(2)} ` +
+                  `reading=${c.readingMatch.toFixed(2)}  ${c.evidence[0] ?? ""}`,
+              );
+            }
+          }
+        } catch (e) {
+          if (e instanceof SearchExhausted) {
+            console.log(`${normalizeReading(raw)} → 本日の検索は終了しました  (${e.message})`);
+          } else {
+            throw e;
+          }
         }
+        break;
       }
-    } catch (e) {
-      if (e instanceof SearchExhausted) {
-        console.log(`${reading} → 本日の検索は終了しました  (${e.message})`);
-      } else {
-        throw e;
+      case "name": {
+        try {
+          const r = await readingResolver.resolve(raw);
+          results.push(r);
+          if (json) continue;
+          if (r.best) {
+            console.log(
+              `${r.name} → ${r.best.reading}  (reading ${r.best.probability.toFixed(2)} × correct ${r.best.readingCorrect.toFixed(2)} × ` +
+                `vtuber ${r.best.isVtuber.toFixed(2)}, ${r.provider}, ${r.hits} hits)`,
+            );
+          } else {
+            console.log(`${r.name} → 見つかりませんでした  [${r.provider}, ${r.hits} hits]`);
+          }
+          if (verbose) {
+            for (const c of r.candidates.slice(0, 6)) {
+              if (c.probability < 0.005) continue;
+              const mark = c.score >= MIN_SCORE ? "*" : " ";
+              console.log(
+                `  ${mark} ${c.reading.padEnd(14)} surface=${c.surface} correct=${c.readingCorrect.toFixed(2)} ` +
+                  `vtuber=${c.isVtuber.toFixed(2)}  ${c.evidence[0] ?? ""}`,
+              );
+            }
+          }
+        } catch (e) {
+          if (e instanceof SearchExhausted) {
+            console.log(`${raw} → 本日の検索は終了しました  (${e.message})`);
+          } else {
+            throw e;
+          }
+        }
+        break;
+      }
+      default: {
+        const _exhaustive: never = direction;
+        throw new Error(String(_exhaustive));
       }
     }
   }

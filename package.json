@@ -1,7 +1,7 @@
 {
   "name": "jev-vtuber-ime-core",
-  "version": "0.1.0",
-  "description": "読みから VTuber の表記を、Web 検索の根拠 + Jev (TypeSafe AI) の判定で解決する。辞書データは持たない。",
+  "version": "0.2.0",
+  "description": "読みから VTuber の表記を、表記から読みを、Web 検索の根拠 + Jev (TypeSafe AI) の判定で解決する。辞書データは持たない。",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,6 +21,7 @@
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "eval:indie": "tsx scripts/eval-indie.ts",
+    "eval:reading": "tsx scripts/eval-reading.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": { "node": ">=20" },
