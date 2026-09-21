@@ -1,0 +1,14 @@
+{
+  "description": "表記→読み。辞書ではなく評価用オラクル。npm test では呼ばない（検索・Jev を消費する）。",
+  "query": "<name> VTuber 読み",
+  "cases": [
+    { "name": "星街すいせい", "expect": ["ほしまちすいせい"] },
+    { "name": "杵月のあ", "expect": ["きねつきのあ"] },
+    { "name": "月ノ美兎", "expect": ["つきのみと"] },
+    { "name": "叶", "expect": ["かなえ"] },
+    { "name": "Gawr Gura", "expect": ["がうるぐら"] },
+    { "name": "ギルザレンⅢ世", "expect": ["ぎるざれんさんせい"] },
+    { "name": "富士葵", "expect": ["ふじあおい"] },
+    { "name": "橋本環奈", "expect": [] }
+  ]
+}
