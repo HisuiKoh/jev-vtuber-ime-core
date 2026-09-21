@@ -18,7 +18,7 @@ export { Brave, DEFAULT_SEARCH_ORDER, GoogleCse, MONID_DEFAULTS, Monid, SearchCh
 export type { MonidOptions, SearchEnv, SearchHit, SearchProvider } from "./search.js";
 export { isPlausibleName, parenConfirmedNames, parenPairs, tokenize } from "./evidence.js";
 export type { ParenPair, Token } from "./evidence.js";
-export { CHECK_TOP, MAX_CANDIDATES, MIN_SCORE, NONE, Resolver, extractCandidates, rankCandidates } from "./resolve.js";
+export { CHECK_TOP, MAX_CANDIDATES, MIN_SCORE, NONE, Resolver, defaultSecondChanceQueries, extractCandidates, rankCandidates, readingGuidedCandidates } from "./resolve.js";
 export type { Extracted, ResolveCandidate, ResolveResult, ResolverOptions } from "./resolve.js";
 export { ReadingResolver, extractReadings, rankReadings } from "./reading.js";
 export type { ReadingCandidate, ReadingExtracted, ReadingResolverOptions, ReadingResult } from "./reading.js";

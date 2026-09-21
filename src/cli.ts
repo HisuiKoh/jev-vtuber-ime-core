@@ -5,9 +5,14 @@ import { fileURLToPath } from "node:url";
 
 import { TypeSafeJev } from "./jev.js";
 import { type Direction, detectDirection, isValidName, isValidReading, normalizeReading } from "./kana.js";
-import { ReadingResolver } from "./reading.js";
-import { MIN_SCORE, Resolver } from "./resolve.js";
+import { ReadingResolver, type ReadingResult } from "./reading.js";
+import { MIN_SCORE, Resolver, type ResolveResult } from "./resolve.js";
 import { SearchChain, SearchExhausted, providersFromEnv } from "./search.js";
+
+const providerLabel = (r: ResolveResult | ReadingResult): string => {
+  const base = r.providerUsed && r.providerUsed !== r.provider ? `${r.provider} via ${r.providerUsed}` : r.provider;
+  return "passes" in r && r.passes === 2 ? `${base} (2nd pass)` : base;
+};
 
 /** カレントディレクトリ → パッケージルート の順で .env を探し、未設定の変数だけ環境に入れる。 */
 function loadDotenv(): void {
@@ -83,10 +88,10 @@ async function main(argv: string[]): Promise<number> {
           if (r.best) {
             console.log(
               `${r.reading} → ${r.best.name}  (who ${r.best.probability.toFixed(2)} × vtuber ${r.best.isVtuber.toFixed(2)} × ` +
-                `reading ${r.best.readingMatch.toFixed(2)}, ${r.provider}, ${r.hits} hits)`,
+                `reading ${r.best.readingMatch.toFixed(2)}, ${providerLabel(r)}, ${r.hits} hits)`,
             );
           } else {
-            console.log(`${r.reading} → 見つかりませんでした  [${r.provider}, ${r.hits} hits]`);
+            console.log(`${r.reading} → 見つかりませんでした  [${providerLabel(r)}, ${r.hits} hits]`);
           }
           if (verbose) {
             for (const c of r.candidates.slice(0, 6)) {
@@ -115,10 +120,10 @@ async function main(argv: string[]): Promise<number> {
           if (r.best) {
             console.log(
               `${r.name} → ${r.best.reading}  (reading ${r.best.probability.toFixed(2)} × correct ${r.best.readingCorrect.toFixed(2)} × ` +
-                `vtuber ${r.best.isVtuber.toFixed(2)}, ${r.provider}, ${r.hits} hits)`,
+                `vtuber ${r.best.isVtuber.toFixed(2)}, ${providerLabel(r)}, ${r.hits} hits)`,
             );
           } else {
-            console.log(`${r.name} → 見つかりませんでした  [${r.provider}, ${r.hits} hits]`);
+            console.log(`${r.name} → 見つかりませんでした  [${providerLabel(r)}, ${r.hits} hits]`);
           }
           if (verbose) {
             for (const c of r.candidates.slice(0, 6)) {

@@ -4,7 +4,7 @@ import { isStopword, parenPairs, tokenize } from "./evidence.js";
 import { type Answer, type JevClient, type Question, noulOf } from "./jev.js";
 import { isValidReading, normalizeName, normalizeReading, readingCompatible, segment } from "./kana.js";
 import { CHECK_TOP, MAX_CANDIDATES, MIN_SCORE, NONE } from "./resolve.js";
-import type { SearchHit, SearchProvider } from "./search.js";
+import { SearchChain, type SearchHit, type SearchProvider } from "./search.js";
 
 const KANA_TEXT_RE = /^[\u3041-\u3096\u30a1-\u30fa\u30fb\u30fc\s\u3000]+$/u;
 
@@ -29,6 +29,10 @@ export interface ReadingResult {
   candidates: ReadingCandidate[];
   best: ReadingCandidate | null;
   provider: string;
+  /** 実際に答えたプロバイダ名。チェーンなら SearchChain.lastProvider */
+  providerUsed?: string | undefined;
+  /** 一次プロバイダ以外が答えたか。この resolve 中のどの検索でもフォールバックなら true */
+  fallback: boolean;
   hits: number;
   model?: string | undefined;
 }
@@ -81,6 +85,13 @@ export function rankReadings(found: Map<string, ReadingExtracted>): string[] {
     .map(([reading]) => reading);
 }
 
+function searchMeta(search: SearchProvider): Pick<ReadingResult, "providerUsed" | "fallback"> {
+  if (search instanceof SearchChain) {
+    return { providerUsed: search.lastProvider ?? undefined, fallback: search.lastWasFallback };
+  }
+  return { providerUsed: search.name, fallback: false };
+}
+
 export class ReadingResolver {
   private readonly jev: JevClient;
   private readonly search: SearchProvider;
@@ -107,11 +118,13 @@ export class ReadingResolver {
         score: 1,
         evidence: [],
       };
-      return { name, candidates: [cand], best: cand, provider: this.search.name, hits: 0 };
+      return { name, candidates: [cand], best: cand, provider: this.search.name, providerUsed: this.search.name, fallback: false, hits: 0 };
     }
 
     const hits: SearchHit[] = [];
     const seen = new Set<string>();
+    let fallback = false;
+    let providerUsed: string | undefined;
     for (const q of this.queries) {
       for (const h of await this.search.search(q(name), 10)) {
         if (!seen.has(h.url)) {
@@ -119,10 +132,13 @@ export class ReadingResolver {
           hits.push(h);
         }
       }
+      const meta = searchMeta(this.search);
+      if (meta.providerUsed !== undefined) providerUsed = meta.providerUsed;
+      fallback = fallback || meta.fallback;
     }
     const found = extractReadings(name, hits);
     if (found.size === 0) {
-      return { name, candidates: [], best: null, provider: this.search.name, hits: hits.length };
+      return { name, candidates: [], best: null, provider: this.search.name, providerUsed, fallback, hits: hits.length };
     }
 
     const ranked = rankReadings(found).slice(0, MAX_CANDIDATES);
@@ -182,7 +198,7 @@ export class ReadingResolver {
     }
     candidates.sort((a, b) => b.score - a.score);
     const best = candidates[0] && candidates[0].score >= MIN_SCORE ? candidates[0] : null;
-    return { name, candidates, best, provider: this.search.name, hits: hits.length, model: resp.model };
+    return { name, candidates, best, provider: this.search.name, providerUsed, fallback, hits: hits.length, model: resp.model };
   }
 }
 

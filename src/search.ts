@@ -115,6 +115,12 @@ export interface MonidOptions {
   /** ポーリング上限 (ms)。Monid の run は非同期で 1〜120 秒かかる */
   timeoutMs?: number | undefined;
   fetchImpl?: typeof fetch | undefined;
+  /** HTTP 429 の再試行回数。既定 2。TinyFish 上流の RATE_LIMIT_EXCEEDED はおよそ 10〜15 秒続く */
+  retryOn429?: number | undefined;
+  /** 429 再試行の待ち時間 (ms)。試行回数を掛けて backoff。既定 2000 (2 秒 + 4 秒) */
+  retryDelayMs?: number | undefined;
+  /** 待ち時間の実装。テスト用。既定は setTimeout */
+  sleep?: ((ms: number) => Promise<void>) | undefined;
 }
 
 export const MONID_DEFAULTS = {
@@ -124,32 +130,50 @@ export const MONID_DEFAULTS = {
   inputTemplate: { query: "{query}", location: "JP", language: "ja" },
 };
 
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 /**
  * Monid (https://monid.ai) 経由の検索。Monid は多数のツールを 1 つの残高で呼ぶ仲介で、
  * 既定の TinyFish /search は $0/call。run を投げて runId をポーリングする非同期 API (typ. 3 秒)。
  * ツールごとに入出力が違うので provider / endpoint / 入力は設定で与え、出力は
  * 「url を持つオブジェクトの配列」を探して SearchHit に寄せる。
+ * HTTP 429 は TinyFish 上流の RATE_LIMIT_EXCEEDED で、およそ 10〜15 秒の窓で続く。
+ * 既定では 2 回再試行 (2 秒 + 4 秒) してから SearchUnavailable にする。
  */
 export class Monid implements SearchProvider {
   readonly name = "monid";
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly retryOn429: number;
+  private readonly retryDelayMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(private readonly opts: MonidOptions) {
     this.baseUrl = opts.baseUrl ?? "https://api.monid.ai";
     this.fetchImpl = opts.fetchImpl ?? defaultFetch;
     this.timeoutMs = opts.timeoutMs ?? 30_000;
+    this.retryOn429 = opts.retryOn429 ?? 2;
+    this.retryDelayMs = opts.retryDelayMs ?? 2000;
+    this.sleep = opts.sleep ?? defaultSleep;
   }
 
   private async request(method: string, path: string, body?: unknown): Promise<unknown> {
-    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${this.opts.apiKey}`, "content-type": "application/json", "x-monid-client": "jev-vtuber-ime" },
-      body: body === undefined ? null : JSON.stringify(body),
-    });
-    if (!res.ok) throw new SearchUnavailable(this.name, `HTTP ${res.status}`, res.status);
-    return res.status === 204 ? null : res.json();
+    let retries = 0;
+    for (;;) {
+      const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${this.opts.apiKey}`, "content-type": "application/json", "x-monid-client": "jev-vtuber-ime" },
+        body: body === undefined ? null : JSON.stringify(body),
+      });
+      if (res.status === 429 && retries < this.retryOn429) {
+        retries += 1;
+        await this.sleep(this.retryDelayMs * retries);
+        continue;
+      }
+      if (!res.ok) throw new SearchUnavailable(this.name, `HTTP ${res.status}`, res.status);
+      return res.status === 204 ? null : res.json();
+    }
   }
 
   async search(query: string, n = 10): Promise<SearchHit[]> {
@@ -166,7 +190,7 @@ export class Monid implements SearchProvider {
     let run: Record<string, unknown> = started;
     while (!isTerminal(run["status"])) {
       if (Date.now() > deadline) throw new SearchUnavailable(this.name, "run timed out");
-      await new Promise((r) => setTimeout(r, 1500));
+      await this.sleep(1500);
       run = (await this.request("GET", `/v1/runs/${encodeURIComponent(started.runId)}`)) as Record<string, unknown>;
     }
     if (run["status"] !== "COMPLETED") {
@@ -205,18 +229,41 @@ export function extractHits(data: unknown, depth = 0): SearchHit[] {
   return [];
 }
 
-/** プロバイダを順に試し、失敗したら次へ。全滅で SearchExhausted。 */
+/**
+ * プロバイダを順に試し、SearchUnavailable なら次へ。全滅で SearchExhausted。
+ * 空配列も成功としてチェーンを止め、次のプロバイダへは進まない。
+ * 直近の成功は lastProvider / lastWasFallback で参照できる。
+ */
 export class SearchChain implements SearchProvider {
   readonly name: string;
+  private _lastProvider: string | null = null;
+  private _lastWasFallback = false;
+
   constructor(private readonly providers: SearchProvider[]) {
     this.name = providers.map((p) => p.name).join(">");
   }
 
+  /** 直近の search で実際に答えたプロバイダ名。呼び出し前、および全滅時は null */
+  get lastProvider(): string | null {
+    return this._lastProvider;
+  }
+
+  /** 直近の成功がチェーン先頭以外のプロバイダによるものか。呼び出し前は false */
+  get lastWasFallback(): boolean {
+    return this._lastWasFallback;
+  }
+
   async search(query: string, n = 10): Promise<SearchHit[]> {
+    this._lastProvider = null;
+    this._lastWasFallback = false;
     const causes: SearchUnavailable[] = [];
-    for (const p of this.providers) {
+    for (let i = 0; i < this.providers.length; i++) {
+      const p = this.providers[i]!;
       try {
-        return await p.search(query, n);
+        const hits = await p.search(query, n);
+        this._lastProvider = p.name;
+        this._lastWasFallback = i > 0;
+        return hits;
       } catch (e) {
         causes.push(e instanceof SearchUnavailable ? e : new SearchUnavailable(p.name, e instanceof Error ? e.message : String(e)));
       }

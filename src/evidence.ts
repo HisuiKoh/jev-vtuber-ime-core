@@ -15,7 +15,13 @@ const TOKEN_RE = new RegExp(TOKEN, "gu");
 const WORD_RE = new RegExp(`^${WORD}$`, "u");
 // 名前には日本語か英字が少なくとも 1 文字は要る (年号・数字・ローマ数字だけの語を弾く)
 const NAME_LETTER_RE = new RegExp(`[${JA}A-Za-z\\uff21-\\uff3a\\uff41-\\uff5a]`, "u");
+const HAS_JA_RE = new RegExp(`[${JA}]`, "u");
+/** かな・長音・中黒・漢字・々 を 1 文字でも含むか。 */
+export const hasJapanese = (token: string): boolean => HAS_JA_RE.test(token);
+/** 大文字または数字始まり。ラテン名 (IRyS、Gawr Gura) と小文字のボイラープレートを分ける。 */
+export const NAME_WORD_START_RE = /^[A-Z0-9\u2160-\u217f\uff10-\uff19\uff21-\uff3a]/u;
 const KANJI_ONLY_RE = /^[\u4e00-\u9fff\u3005]$/u;
+export const isNameSpace = (ch: string): boolean => ch === " " || ch === "\u3000";
 const KANA_INNER = "[\\u3041-\\u3096\\u30a1-\\u30fa\\u30fb\\u30fc\\s]+?";
 const LATIN_INNER = `${WORD}(?: ${WORD}){0,${MAX_LATIN_WORDS - 1}}`;
 /** 「X（Y）」の括弧書き。Y はかな (中黒・長音・空白可) か英字語。 */
@@ -48,7 +54,7 @@ export function isPlausibleName(token: string): boolean {
 
 /** 大文字始まり (または数字始まり) の英字語で、ストップワードでないもの。空白区切りで連ねて 1 つの名前とみなす対象。 */
 const isNameWord = (tok: string): boolean =>
-  WORD_RE.test(tok) && /^[A-Z0-9\u2160-\u217f\uff10-\uff19\uff21-\uff3a]/u.test(tok) && !isStopword(tok);
+  WORD_RE.test(tok) && NAME_WORD_START_RE.test(tok) && !isStopword(tok);
 
 /** 中黒だけの端を落とす (「・オス・」のような切れ端)。 */
 const trimToken = (tok: string): string => tok.replace(/^\u30fb+|\u30fb+$/gu, "");
@@ -67,6 +73,7 @@ export interface ParenPair {
 /**
  * テキストから名前らしいトークンを列挙する。空白 1 つで連なる名前語 (大文字始まり・非ストップワード) は
  * 2〜MAX_LATIN_WORDS 語の連結も候補にする (Gawr Gura、Ninomae Ina'nis)。
+ * 日本語を含むトークンが空白 1 つ (U+0020 または U+3000) で隣り合うときは、空白なしの連結も出す (最大 2 語)。
  */
 export function tokenize(text: string): Token[] {
   const matches = [...text.matchAll(TOKEN_RE)];
@@ -75,6 +82,14 @@ export function tokenize(text: string): Token[] {
     const m = matches[i]!;
     const single = trimToken(m[0]);
     if (single) out.push({ text: single, end: m.index + m[0].length });
+    const jaNext = matches[i + 1];
+    if (jaNext && hasJapanese(m[0]) && hasJapanese(jaNext[0])) {
+      const gap = text.slice(m.index + m[0].length, jaNext.index);
+      if (gap.length === 1 && isNameSpace(gap)) {
+        const joinedJa = trimToken(m[0] + jaNext[0]);
+        if (joinedJa) out.push({ text: joinedJa, end: jaNext.index + jaNext[0].length });
+      }
+    }
     if (!isNameWord(m[0])) continue;
     let joined = m[0];
     let end = m.index + m[0].length;
@@ -90,8 +105,8 @@ export function tokenize(text: string): Token[] {
 }
 
 /**
- * 「X（Y）」の括弧書きを返す。Y はかな塊または英字語。X は括弧の直前で終わるトークンのうち最長のもの。
- * 表記（読み）も 読み（表記）も同じ形。
+ * 「X（Y）」の括弧書きを返す。Y はかな塊または英字語。X は括弧の直前で終わるトークン全部
+ * (「Gawr Gura」と「Gura」の両方)。表記（読み）も 読み（表記）も同じ形。
  */
 export function parenPairs(text: string, tokens: Token[]): ParenPair[] {
   const out: ParenPair[] = [];
@@ -99,10 +114,9 @@ export function parenPairs(text: string, tokens: Token[]): ParenPair[] {
     const inner = m[1]!.trim();
     if (!inner) continue;
     const before = text.slice(0, m.index).trimEnd().length;
-    const ending = tokens.filter((t) => t.end === before);
-    if (ending.length === 0) continue;
-    const outer = ending.reduce((a, b) => (b.text.length > a.text.length ? b : a)).text;
-    out.push({ outer, inner });
+    for (const t of tokens) {
+      if (t.end === before) out.push({ outer: t.text, inner });
+    }
   }
   return out;
 }
